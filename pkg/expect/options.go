@@ -84,19 +84,26 @@ func WithAppAdapters(appadapters []string) ExpectationOption {
 }
 
 //AddNetInstanceNameAndPortPublish adds NetInstance with defined name and ports mapping for apps in format ["EXTERNAL_PORT:INTERNAL_PORT"]
-func AddNetInstanceNameAndPortPublish(netInstanceName string, portPublish []string) ExpectationOption {
+func AddNetInstanceNameAndPortPublish(netInstance string, portPublish []string) ExpectationOption {
+	mac := ""
+	split := strings.Split(netInstance, ":")
+	name := split[0]
+	if len(split) == 7 {
+		mac = strings.Join(split[1:], ":")
+	}
 	return func(expectation *AppExpectation) {
 		expectation.netInstances = append(expectation.netInstances, &NetInstanceExpectation{
-			name:          netInstanceName,
+			name:          name,
 			portsReceived: portPublish,
 			ports:         make(map[int]int),
+			mac:           mac,
 		})
 	}
 }
 
 //AddNetInstanceAndPortPublish adds NetInstance with defined subnet cidr, networkType,
 //netInstanceName and ports mapping for apps in format ["EXTERNAL_PORT:INTERNAL_PORT"]
-func AddNetInstanceAndPortPublish(subnetCidr string, networkType string, netInstanceName string, portPublish []string, uplinkAdapter string) ExpectationOption {
+func AddNetInstanceAndPortPublish(subnetCidr, networkType, netInstanceName string, portPublish []string, uplinkAdapter string) ExpectationOption {
 	return func(expectation *AppExpectation) {
 		expectation.netInstances = append(expectation.netInstances, &NetInstanceExpectation{
 			name:          netInstanceName,
@@ -122,10 +129,39 @@ func WithPortsPublish(portPublish []string) ExpectationOption {
 	}
 }
 
+//WithStaticDNSEntries extends network configuration with static DNS entries
+//in format ["HOSTNAME:IP_ADDRESS,IP_ADDRESS,..."]
+func WithStaticDNSEntries(networkName string, dnsEntries []string) ExpectationOption {
+	return func(expectation *AppExpectation) {
+		for _, netInstance := range expectation.netInstances {
+			if netInstance.name != networkName {
+				continue
+			}
+			netInstance.staticDNSEntries = make(map[string][]string)
+			for _, entry := range dnsEntries {
+				mapping := strings.SplitN(entry, ":", 2)
+				if len(mapping) != 2 {
+					continue
+				}
+				hostname := mapping[0]
+				ips := strings.Split(mapping[1], ",")
+				netInstance.staticDNSEntries[hostname] = ips
+			}
+		}
+	}
+}
+
 //WithDiskSize set disk size for created app (equals with image size if not defined)
 func WithDiskSize(diskSizeBytes int64) ExpectationOption {
 	return func(expectation *AppExpectation) {
 		expectation.diskSize = diskSizeBytes
+	}
+}
+
+//WithVolumeSize set volume size for created app
+func WithVolumeSize(volumeSizeBytes int64) ExpectationOption {
+	return func(expectation *AppExpectation) {
+		expectation.volumeSize = volumeSizeBytes
 	}
 }
 
@@ -159,9 +195,16 @@ func WithVolumeType(volumesType VolumeType) ExpectationOption {
 }
 
 //WithACL sets access only for defined hosts
-func WithACL(acl []string) ExpectationOption {
+func WithACL(acl map[string][]string) ExpectationOption {
 	return func(expectation *AppExpectation) {
 		expectation.acl = acl
+	}
+}
+
+//WithVLANs sets access VLAN IDs for application interfaces
+func WithVLANs(vlans map[string]int) ExpectationOption {
+	return func(expectation *AppExpectation) {
+		expectation.vlans = vlans
 	}
 }
 
@@ -197,5 +240,19 @@ func WithSFTPLoad(sftp bool) ExpectationOption {
 func WithAdditionalDisks(disks []string) ExpectationOption {
 	return func(expectation *AppExpectation) {
 		expectation.disks = disks
+	}
+}
+
+//WithOpenStackMetadata use openstackMetadata for VM
+func WithOpenStackMetadata(openStackMetadata bool) ExpectationOption {
+	return func(expectation *AppExpectation) {
+		expectation.openStackMetadata = openStackMetadata
+	}
+}
+
+//WithProfiles set profileList for appInstance
+func WithProfiles(profiles []string) ExpectationOption {
+	return func(expectation *AppExpectation) {
+		expectation.profiles = profiles
 	}
 }

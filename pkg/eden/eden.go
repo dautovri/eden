@@ -27,6 +27,12 @@ import (
 	"github.com/spf13/viper"
 )
 
+//LinkState of an EVE uplink interface.
+type LinkState struct {
+	InterfaceName string
+	IsUP          bool
+}
+
 //StartRedis function run redis in docker with mounted redisPath:/data
 //if redisForce is set, it recreates container
 func StartRedis(redisPort int, redisPath string, redisForce bool, redisTag string) (err error) {
@@ -115,7 +121,7 @@ func StatusRedis() (status string, err error) {
 
 //StartAdam function run adam in docker with mounted adamPath/run:/adam/run
 //if adamForce is set, it recreates container
-func StartAdam(adamPort int, adamPath string, adamForce bool, adamTag string, adamRemoteRedisURL string, opts ...string) (err error) {
+func StartAdam(adamPort int, adamPath string, adamForce bool, adamTag string, adamRemoteRedisURL string, apiV1 bool, opts ...string) (err error) {
 	edenHome, err := utils.DefaultEdenDir()
 	if err != nil {
 		return err
@@ -134,6 +140,33 @@ func StartAdam(adamPort int, adamPath string, adamForce bool, adamTag string, ad
 	envs := []string{
 		fmt.Sprintf("SERVER_CERT=%s", cert),
 		fmt.Sprintf("SERVER_KEY=%s", key),
+	}
+	if !apiV1 {
+		signingCertPath := filepath.Join(globalCertsDir, "signing.pem")
+		signingKeyPath := filepath.Join(globalCertsDir, "signing-key.pem")
+		signingCert, err := ioutil.ReadFile(signingCertPath)
+		if err != nil {
+			return fmt.Errorf("StartAdam: cannot load %s: %s", signingCertPath, err)
+		}
+		signingKey, err := ioutil.ReadFile(signingKeyPath)
+		if err != nil {
+			return fmt.Errorf("StartAdam: cannot load %s: %s", signingKeyPath, err)
+		}
+		envs = append(envs, fmt.Sprintf("SIGNING_CERT=%s", signingCert))
+		envs = append(envs, fmt.Sprintf("SIGNING_KEY=%s", signingKey))
+
+		encryptCertPath := filepath.Join(globalCertsDir, "encrypt.pem")
+		encryptKeyPath := filepath.Join(globalCertsDir, "encrypt-key.pem")
+		encryptCert, err := ioutil.ReadFile(encryptCertPath)
+		if err != nil {
+			return fmt.Errorf("StartAdam: cannot load %s: %s", encryptCertPath, err)
+		}
+		encryptKey, err := ioutil.ReadFile(encryptKeyPath)
+		if err != nil {
+			return fmt.Errorf("StartAdam: cannot load %s: %s", encryptKeyPath, err)
+		}
+		envs = append(envs, fmt.Sprintf("ENCRYPT_CERT=%s", encryptCert))
+		envs = append(envs, fmt.Sprintf("ENCRYPT_KEY=%s", encryptKey))
 	}
 	portMap := map[string]string{"8080": strconv.Itoa(adamPort)}
 	volumeMap := map[string]string{"/adam/run": fmt.Sprintf("%s/run", adamPath)}
@@ -359,9 +392,8 @@ func StatusEServer() (status string, err error) {
 	return state, nil
 }
 
-
 //GenerateEveCerts function generates certs for EVE
-func GenerateEveCerts(certsDir, domain, ip, eveIP, uuid, devModel, ssid, password string) (err error) {
+func GenerateEveCerts(certsDir, domain, ip, eveIP, uuid, devModel, ssid, password string, apiV1 bool) (err error) {
 	model, err := models.GetDevModelByName(devModel)
 	if err != nil {
 		return fmt.Errorf("GenerateEveCerts: %s", err)
@@ -404,16 +436,38 @@ func GenerateEveCerts(certsDir, domain, ip, eveIP, uuid, devModel, ssid, passwor
 	if _, err := tls.LoadX509KeyPair(serverCertPath, serverKeyPath); err != nil {
 		log.Debug("generating Adam cert and key")
 		ips := []net.IP{net.ParseIP(ip), net.ParseIP(eveIP), net.ParseIP("127.0.0.1")}
-		ServerCert, ServerKey := utils.GenServerCert(rootCert, rootKey, big.NewInt(1), ips, []string{domain}, domain)
+		ServerCert, ServerKey := utils.GenServerCertElliptic(rootCert, rootKey, big.NewInt(1), ips, []string{domain}, domain)
 		if err := utils.WriteToFiles(ServerCert, ServerKey, serverCertPath, serverKeyPath); err != nil {
 			return fmt.Errorf("GenerateEveCerts: %s", err)
+		}
+	}
+	if !apiV1 {
+		signingCertPath := filepath.Join(globalCertsDir, "signing.pem")
+		signingKeyPath := filepath.Join(globalCertsDir, "signing-key.pem")
+		if _, err := tls.LoadX509KeyPair(signingCertPath, signingKeyPath); err != nil {
+			log.Debug("generating Adam signing cert and key")
+			ips := []net.IP{net.ParseIP(ip), net.ParseIP(eveIP), net.ParseIP("127.0.0.1")}
+			signingCert, signingKey := utils.GenServerCertElliptic(rootCert, rootKey, big.NewInt(1), ips, []string{domain}, domain)
+			if err := utils.WriteToFiles(signingCert, signingKey, signingCertPath, signingKeyPath); err != nil {
+				return fmt.Errorf("GenerateEveCerts signing: %s", err)
+			}
+		}
+		encryptCertPath := filepath.Join(globalCertsDir, "encrypt.pem")
+		encryptKeyPath := filepath.Join(globalCertsDir, "encrypt-key.pem")
+		if _, err := tls.LoadX509KeyPair(encryptCertPath, encryptKeyPath); err != nil {
+			log.Debug("generating Adam encrypt cert and key")
+			ips := []net.IP{net.ParseIP(ip), net.ParseIP(eveIP), net.ParseIP("127.0.0.1")}
+			encryptCert, encryptKey := utils.GenServerCertElliptic(rootCert, rootKey, big.NewInt(1), ips, []string{domain}, domain)
+			if err := utils.WriteToFiles(encryptCert, encryptKey, encryptCertPath, encryptKeyPath); err != nil {
+				return fmt.Errorf("GenerateEveCerts signing: %s", err)
+			}
 		}
 	}
 	log.Debug("generating EVE cert and key")
 	if err := utils.CopyFile(caCertPath, filepath.Join(certsDir, "root-certificate.pem")); err != nil {
 		return fmt.Errorf("GenerateEveCerts: %s", err)
 	}
-	ClientCert, ClientKey := utils.GenServerCert(rootCert, rootKey, big.NewInt(2), nil, nil, uuid)
+	ClientCert, ClientKey := utils.GenServerCertElliptic(rootCert, rootKey, big.NewInt(2), nil, nil, uuid)
 	log.Debug("saving files")
 	if err := utils.WriteToFiles(ClientCert, ClientKey, filepath.Join(certsDir, "onboard.cert.pem"), filepath.Join(certsDir, "onboard.key.pem")); err != nil {
 		return fmt.Errorf("GenerateEveCerts: %s", err)
@@ -435,6 +489,97 @@ func GenerateEveCerts(certsDir, domain, ip, eveIP, uuid, devModel, ssid, passwor
 			}
 		}
 	}
+	if model.DevModelType() == defaults.DefaultQemuModel && viper.GetString("eve.arch") == "arm64" {
+		// we need to properly set console for qemu arm64
+		if err := ioutil.WriteFile(filepath.Join(certsDir, "grub.cfg"), []byte("set_global dom0_console \"console=ttyAMA0,115200 $dom0_console\""), 0666); err != nil {
+			return fmt.Errorf("GenerateEveCerts: %s", err)
+		}
+	}
+	redisPasswordFile := filepath.Join(globalCertsDir, defaults.DefaultRedisPasswordFile)
+	if _, err := os.Stat(redisPasswordFile); os.IsNotExist(err) {
+		pwd := utils.GeneratePassword(8)
+		if err := ioutil.WriteFile(redisPasswordFile, []byte(pwd), 0755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+//PutEveCerts function put certs for zedcontrol
+func PutEveCerts(certsDir, devModel, ssid, password string) (err error) {
+	model, err := models.GetDevModelByName(devModel)
+	if err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	if _, err := os.Stat(certsDir); os.IsNotExist(err) {
+		if err = os.MkdirAll(certsDir, 0755); err != nil {
+			return fmt.Errorf("GenerateEveCerts: %s", err)
+		}
+	}
+	edenHome, err := utils.DefaultEdenDir()
+	if err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	globalCertsDir := filepath.Join(edenHome, defaults.DefaultCertsDist)
+	if _, err := os.Stat(globalCertsDir); os.IsNotExist(err) {
+		if err = os.MkdirAll(globalCertsDir, 0755); err != nil {
+			return fmt.Errorf("GenerateEveCerts: %s", err)
+		}
+	}
+	log.Debug("generating CA")
+	caCertPath := filepath.Join(globalCertsDir, "root-certificate.pem")
+	caKeyPath := filepath.Join(globalCertsDir, "root-certificate-key.pem")
+	rootCert, rootKey := utils.GenCARoot()
+	if _, err := tls.LoadX509KeyPair(caCertPath, caKeyPath); err == nil { //existing certs looks ok
+		log.Info("Use existing certs")
+		rootCert, err = utils.ParseCertificate(caCertPath)
+		if err != nil {
+			return fmt.Errorf("GenerateEveCerts: cannot parse certificate from %s: %s", caCertPath, err)
+		}
+		rootKey, err = utils.ParsePrivateKey(caKeyPath)
+		if err != nil {
+			return fmt.Errorf("GenerateEveCerts: cannot parse key from %s: %s", caKeyPath, err)
+		}
+	}
+	if err := utils.WriteToFiles(rootCert, rootKey, caCertPath, caKeyPath); err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	log.Debug("locating EVE cert and key")
+	if err := ioutil.WriteFile(filepath.Join(certsDir, "root-certificate.pem"), []byte(defaults.RootCert), 0600); err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	if err := ioutil.WriteFile(filepath.Join(certsDir, "onboard.cert.pem"), []byte(defaults.OnboardCert), 0600); err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	if err := ioutil.WriteFile(filepath.Join(certsDir, "onboard.key.pem"), []byte(defaults.OnboardKey), 0600); err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	if err := ioutil.WriteFile(filepath.Join(certsDir, "v2tlsbaseroot-certificates.pem"), []byte(defaults.V2TLS), 0600); err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	log.Debug("generating ssh pair")
+	if err := utils.GenerateSSHKeyPair(filepath.Join(certsDir, "id_rsa"), filepath.Join(certsDir, "id_rsa.pub")); err != nil {
+		return fmt.Errorf("GenerateEveCerts: %s", err)
+	}
+	if ssid != "" && password != "" {
+		log.Debug("generating DevicePortConfig")
+		if portConfig := model.GetPortConfig(ssid, password); portConfig != "" {
+			if _, err := os.Stat(filepath.Join(certsDir, "DevicePortConfig", "override.json")); os.IsNotExist(err) {
+				if err := os.MkdirAll(filepath.Join(certsDir, "DevicePortConfig"), 0755); err != nil {
+					return fmt.Errorf("GenerateEveCerts: %s", err)
+				}
+				if err := ioutil.WriteFile(filepath.Join(certsDir, "DevicePortConfig", "override.json"), []byte(portConfig), 0666); err != nil {
+					return fmt.Errorf("GenerateEveCerts: %s", err)
+				}
+			}
+		}
+	}
+	if model.DevModelType() == defaults.DefaultQemuModel && viper.GetString("eve.arch") == "arm64" {
+		// we need to properly set console for qemu arm64
+		if err := ioutil.WriteFile(filepath.Join(certsDir, "grub.cfg"), []byte("set_global dom0_console \"console=ttyAMA0,115200 $dom0_console\""), 0666); err != nil {
+			return fmt.Errorf("GenerateEveCerts: %s", err)
+		}
+	}
 	redisPasswordFile := filepath.Join(globalCertsDir, defaults.DefaultRedisPasswordFile)
 	if _, err := os.Stat(redisPasswordFile); os.IsNotExist(err) {
 		pwd := utils.GeneratePassword(8)
@@ -446,14 +591,10 @@ func GenerateEveCerts(certsDir, domain, ip, eveIP, uuid, devModel, ssid, passwor
 }
 
 //GenerateEVEConfig function copy certs to EVE config folder
-func GenerateEVEConfig(eveConfig string, domain string, ip string, port int, apiV1 bool) (err error) {
+//if ip is empty will not fill hosts file
+func GenerateEVEConfig(eveConfig string, domain string, ip string, port int, apiV1 bool, softserial string) (err error) {
 	if _, err = os.Stat(eveConfig); os.IsNotExist(err) {
 		if err = os.MkdirAll(eveConfig, 0755); err != nil {
-			return fmt.Errorf("GenerateEVEConfig: %s", err)
-		}
-	}
-	if _, err = os.Stat(filepath.Join(eveConfig, "hosts")); os.IsNotExist(err) {
-		if err = ioutil.WriteFile(filepath.Join(eveConfig, "hosts"), []byte(fmt.Sprintf("%s %s\n", ip, domain)), 0666); err != nil {
 			return fmt.Errorf("GenerateEVEConfig: %s", err)
 		}
 	}
@@ -464,8 +605,26 @@ func GenerateEVEConfig(eveConfig string, domain string, ip string, port int, api
 			}
 		}
 	}
-	if _, err = os.Stat(filepath.Join(eveConfig, "server")); os.IsNotExist(err) {
-		if err = ioutil.WriteFile(filepath.Join(eveConfig, "server"), []byte(fmt.Sprintf("%s:%d\n", domain, port)), 0666); err != nil {
+	if ip != "" {
+		if _, err = os.Stat(filepath.Join(eveConfig, "hosts")); os.IsNotExist(err) {
+			if err = ioutil.WriteFile(filepath.Join(eveConfig, "hosts"), []byte(fmt.Sprintf("%s %s\n", ip, domain)), 0666); err != nil {
+				return fmt.Errorf("GenerateEVEConfig: %s", err)
+			}
+		}
+		if _, err = os.Stat(filepath.Join(eveConfig, "server")); os.IsNotExist(err) {
+			if err = ioutil.WriteFile(filepath.Join(eveConfig, "server"), []byte(fmt.Sprintf("%s:%d\n", domain, port)), 0666); err != nil {
+				return fmt.Errorf("GenerateEVEConfig: %s", err)
+			}
+		}
+	} else {
+		if _, err = os.Stat(filepath.Join(eveConfig, "server")); os.IsNotExist(err) {
+			if err = ioutil.WriteFile(filepath.Join(eveConfig, "server"), []byte(domain), 0666); err != nil {
+				return fmt.Errorf("GenerateEVEConfig: %s", err)
+			}
+		}
+	}
+	if softserial != "" {
+		if err := ioutil.WriteFile(filepath.Join(eveConfig, "soft_serial"), []byte(softserial), 0666); err != nil {
 			return fmt.Errorf("GenerateEVEConfig: %s", err)
 		}
 	}

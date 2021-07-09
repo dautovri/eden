@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/lf-edge/eden/pkg/defaults"
@@ -16,6 +17,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
+
+var viperAccessMutex sync.RWMutex
 
 //ConfigVars struct with parameters from config file
 type ConfigVars struct {
@@ -54,6 +57,8 @@ type ConfigVars struct {
 	EServerImageDist  string
 	EServerPort       string
 	EServerIP         string
+	RegistryIP        string
+	RegistryPort      string
 	LogLevel          string
 	AdamLogLevel      string
 }
@@ -83,6 +88,7 @@ func InitVars() (*ConfigVars, error) {
 			}
 		}
 		caCertPath := filepath.Join(globalCertsDir, "root-certificate.pem")
+		viperAccessMutex.RLock()
 		var vars = &ConfigVars{
 			AdamIP:            viper.GetString("adam.ip"),
 			AdamPort:          viper.GetString("adam.port"),
@@ -118,9 +124,12 @@ func InitVars() (*ConfigVars, error) {
 			EServerImageDist:  ResolveAbsPath(viper.GetString("eden.images.dist")),
 			EServerPort:       viper.GetString("eden.eserver.port"),
 			EServerIP:         viper.GetString("eden.eserver.ip"),
+			RegistryIP:        viper.GetString("registry.ip"),
+			RegistryPort:      viper.GetString("registry.port"),
 			LogLevel:          viper.GetString("eve.log-level"),
 			AdamLogLevel:      viper.GetString("eve.adam-log-level"),
 		}
+		viperAccessMutex.RUnlock()
 		redisPasswordFile := filepath.Join(globalCertsDir, defaults.DefaultRedisPasswordFile)
 		pwd, err := ioutil.ReadFile(redisPasswordFile)
 		if err == nil {
@@ -183,7 +192,7 @@ func loadConfigFile(config string, local bool) (loaded bool, err error) {
 		}
 		contextFile := context.GetCurrentConfig()
 		if config != contextFile {
-			loaded, err := LoadConfigFile(contextFile)
+			loaded, err := loadConfigFile(contextFile, true)
 			if err != nil {
 				return loaded, err
 			}
@@ -227,11 +236,15 @@ func loadConfigFile(config string, local bool) (loaded bool, err error) {
 
 //LoadConfigFile load config from file with viper
 func LoadConfigFile(config string) (loaded bool, err error) {
+	viperAccessMutex.Lock()
+	defer viperAccessMutex.Unlock()
 	return loadConfigFile(config, true)
 }
 
 //LoadConfigFileContext load config from context file with viper
 func LoadConfigFileContext(config string) (loaded bool, err error) {
+	viperAccessMutex.Lock()
+	defer viperAccessMutex.Unlock()
 	return loadConfigFile(config, false)
 }
 
@@ -304,7 +317,7 @@ func generateConfigFileFromTemplate(filePath string, templateString string, cont
 		case "adam.remote.redis":
 			return true
 		case "adam.v1":
-			return true
+			return false
 		case "adam.caching.enabled":
 			return false
 		case "adam.caching.redis":
@@ -337,9 +350,12 @@ func generateConfigFileFromTemplate(filePath string, templateString string, cont
 		case "eve.log":
 			return fmt.Sprintf("%s-eve.log", strings.ToLower(context.Current))
 		case "eve.firmware":
-			return fmt.Sprintf("[%s %s]",
-				filepath.Join(imageDist, "eve", "OVMF_CODE.fd"),
-				filepath.Join(imageDist, "eve", "OVMF_VARS.fd"))
+			if runtime.GOARCH == "amd64" {
+				return fmt.Sprintf("[%s %s]",
+					filepath.Join(imageDist, "eve", "OVMF_CODE.fd"),
+					filepath.Join(imageDist, "eve", "OVMF_VARS.fd"))
+			}
+			return fmt.Sprintf("[%s]", filepath.Join(imageDist, "eve", "OVMF.fd"))
 		case "eve.repo":
 			return defaults.DefaultEveRepo
 		case "eve.registry":
@@ -372,6 +388,8 @@ func generateConfigFileFromTemplate(filePath string, templateString string, cont
 			return defaults.DefaultTelnetPort
 		case "eve.ssid":
 			return ""
+		case "eve.qemu-monitor-port":
+			return defaults.DefaultQemuMonitorPort
 
 		case "eden.root":
 			return filepath.Join(currentPath, defaults.DefaultDist)

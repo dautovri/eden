@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/dustin/go-humanize"
 	"github.com/lf-edge/eden/pkg/controller/eapps"
+	"github.com/lf-edge/eden/pkg/controller/eflowlog"
 	"github.com/lf-edge/eden/pkg/controller/einfo"
 	"github.com/lf-edge/eden/pkg/controller/elog"
 	"github.com/lf-edge/eden/pkg/controller/emetric"
@@ -34,9 +38,13 @@ var (
 	appCpus     uint32
 	appMemory   string
 	diskSize    string
+	mount       []string
+	volumeSize  string
 	imageFormat string
 	volumeType  string
 	acl         []string
+	profiles    []string
+	vlans       []string
 
 	deleteVolumes bool
 
@@ -47,15 +55,46 @@ var (
 
 	directLoad bool
 	sftpLoad   bool
+
+	openStackMetadata bool
 )
 
 var podCmd = &cobra.Command{
 	Use: "pod",
 }
 
+func processAcls(acls []string) map[string][]string {
+	m := map[string][]string{}
+	for _, el := range acls {
+		parsed := strings.SplitN(el, ":", 2)
+		if len(parsed) > 1 {
+			m[parsed[0]] = append(m[parsed[0]], parsed[1])
+		} else {
+			m[""] = append(m[""], parsed[0])
+		}
+	}
+	return m
+}
+
+func processVLANs(vlans []string) (map[string]int, error) {
+	m := map[string]int{}
+	for _, el := range vlans {
+		parsed := strings.SplitN(el, ":", 2)
+		if len(parsed) < 2 {
+			return nil, errors.New("missing VLAN ID")
+		}
+		vid, err := strconv.Atoi(parsed[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid VLAN ID: %w", err)
+		}
+		m[parsed[0]] = vid
+	}
+	return m, nil
+}
+
 //podDeployCmd is command for deploy application on EVE
 var podDeployCmd = &cobra.Command{
-	Use:   "deploy (docker|http(s)|file)://(<TAG>[:<VERSION>] | <URL for qcow2 image> | <path to qcow2 image>)",
+	Use:   "deploy (docker|http(s)|file|directory)://(<TAG|PATH>[:<VERSION>] | <URL for qcow2 image> | <path to qcow2 image>)",
 	Short: "Deploy app in pod",
 	Long:  `Deploy app in pod.`,
 	Args:  cobra.ExactArgs(1),
@@ -65,6 +104,7 @@ var podDeployCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("error reading config: %s", err.Error())
 		}
+		certsDir = utils.ResolveAbsPath(viper.GetString("eden.certs-dist"))
 		ssid = viper.GetString("eve.ssid")
 		return nil
 	},
@@ -97,6 +137,11 @@ var podDeployCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 		opts = append(opts, expect.WithDiskSize(int64(diskSizeParsed)))
+		volumeSizeParsed, err := humanize.ParseBytes(volumeSize)
+		if err != nil {
+			log.Fatal(err)
+		}
+		opts = append(opts, expect.WithVolumeSize(int64(volumeSizeParsed)))
 		appMemoryParsed, err := humanize.ParseBytes(appMemory)
 		if err != nil {
 			log.Fatal(err)
@@ -105,15 +150,20 @@ var podDeployCmd = &cobra.Command{
 		opts = append(opts, expect.WithResources(appCpus, uint32(appMemoryParsed/1000)))
 		opts = append(opts, expect.WithImageFormat(imageFormat))
 		if aclOnlyHost {
-			opts = append(opts, expect.WithACL([]string{""}))
+			opts = append(opts, expect.WithACL(map[string][]string{"": {defaults.DefaultHostOnlyNotation}}))
 		} else {
-			opts = append(opts, expect.WithACL(acl))
+			opts = append(opts, expect.WithACL(processAcls(acl)))
 		}
+		vlansParsed, err := processVLANs(vlans)
+		if err != nil {
+			log.Fatal(err)
+		}
+		opts = append(opts, expect.WithVLANs(vlansParsed))
 		opts = append(opts, expect.WithSFTPLoad(sftpLoad))
 		if !sftpLoad {
 			opts = append(opts, expect.WithHTTPDirectLoad(directLoad))
 		}
-		opts = append(opts, expect.WithAdditionalDisks(disks))
+		opts = append(opts, expect.WithAdditionalDisks(append(disks, mount...)))
 		registryToUse := registry
 		switch registry {
 		case "local":
@@ -125,6 +175,8 @@ var podDeployCmd = &cobra.Command{
 		if noHyper {
 			opts = append(opts, expect.WithVirtualizationMode(config.VmMode_NOHYPER))
 		}
+		opts = append(opts, expect.WithOpenStackMetadata(openStackMetadata))
+		opts = append(opts, expect.WithProfiles(profiles))
 		expectation := expect.AppExpectationFromURL(ctrl, dev, appLink, podName, opts...)
 		appInstanceConfig := expectation.Application()
 		dev.SetApplicationInstanceConfig(append(dev.GetApplicationInstances(), appInstanceConfig.Uuidandversion.Uuid))
@@ -401,6 +453,23 @@ var podLogsCmd = &cobra.Command{
 						if err = ctrl.MetricChecker(dev.GetID(), metricsQ, handleMetric, metricType, 0); err != nil {
 							log.Fatalf("MetricChecker: %s", err)
 						}
+					case "netstat":
+						//block for process FlowLog
+						fmt.Printf("netstat list for app %s:\n", app.Uuidandversion.Uuid)
+						//process only existing elements
+						flowLogType := eflowlog.FlowLogExist
+
+						if outputTail > 0 {
+							//process only outputTail elements from end
+							flowLogType = eflowlog.FlowLogTail(outputTail)
+						}
+
+						//logsQ for filtering logs by app
+						logsQ := make(map[string]string)
+						logsQ["scope.uuid"] = app.Uuidandversion.Uuid
+						if err = ctrl.FlowLogChecker(dev.GetID(), logsQ, eflowlog.HandleFactory(false), flowLogType, 0); err != nil {
+							log.Fatalf("FlowLogChecker: %s", err)
+						}
 					case "app":
 						//block for process app logs
 						fmt.Printf("App logs list for app %s:\n", app.Uuidandversion.Uuid)
@@ -441,15 +510,23 @@ func podInit() {
 	podDeployCmd.Flags().StringVar(&diskSize, "disk-size", humanize.Bytes(0), "disk size (empty or 0 - same as in image)")
 	podDeployCmd.Flags().StringVar(&volumeType, "volume-type", "qcow2", "volume type for empty volumes (qcow2, raw, qcow, vmdk, vhdx or oci); set it to none to not use volumes")
 	podDeployCmd.Flags().StringSliceVar(&appAdapters, "adapters", nil, "adapters to assign to the application instance")
-	podDeployCmd.Flags().StringSliceVar(&podNetworks, "networks", nil, "Networks to connect to app (ports will be mapped to first network)")
+	podDeployCmd.Flags().StringSliceVar(&podNetworks, "networks", nil, "Networks to connect to app (ports will be mapped to first network). May have <name:[MAC address]> notation.")
 	podDeployCmd.Flags().StringVar(&imageFormat, "format", "", "format for image, one of 'container','qcow2','raw','qcow','vmdk','vhdx'; if not provided, defaults to container image for docker and oci transports, qcow2 for file and http/s transports")
 	podDeployCmd.Flags().BoolVar(&aclOnlyHost, "only-host", false, "Allow access only to host and external networks")
 	podDeployCmd.Flags().BoolVar(&noHyper, "no-hyper", false, "Run pod without hypervisor")
 	podDeployCmd.Flags().StringVar(&registry, "registry", "remote", "Select registry to use for containers (remote/local)")
 	podDeployCmd.Flags().BoolVar(&directLoad, "direct", true, "Use direct download for image instead of eserver")
 	podDeployCmd.Flags().BoolVar(&sftpLoad, "sftp", false, "Force use of sftp to load http/file image from eserver")
-	podDeployCmd.Flags().StringSliceVar(&disks, "disks", nil, "Additional disks to use")
-	podDeployCmd.Flags().StringSliceVar(&acl, "acl", nil, "Allow access only to defined hosts/ips/subnets")
+	podDeployCmd.Flags().StringSliceVar(&disks, "disks", nil, `Additional disks to use. You can write it in notation <link> or <mount point>:<link>. Deprecated. Please use volumes instead.`)
+	podDeployCmd.Flags().StringArrayVar(&mount, "mount", nil, `Additional volumes to use. You can write it in notation src=<link>,dst=<mount point>.`)
+	podDeployCmd.Flags().StringVar(&volumeSize, "volume-size", humanize.IBytes(defaults.DefaultVolumeSize), "volume size")
+	podDeployCmd.Flags().StringSliceVar(&profiles, "profile", nil, "profile to set for app")
+	podDeployCmd.Flags().StringSliceVar(&acl, "acl", nil, `Allow access only to defined hosts/ips/subnets
+You can set acl for particular network in format '<network_name:acl>'
+To remove acls you can set empty line '<network_name>:'`)
+	podDeployCmd.Flags().StringSliceVar(&vlans, "vlan", nil, `Connect application to the (switch) network over an access port assigned to the given VLAN.
+You can set access VLAN ID (VID) for a particular network in the format '<network_name:VID>'`)
+	podDeployCmd.Flags().BoolVar(&openStackMetadata, "openstack-metadata", false, "Use OpenStack metadata for VM")
 	podCmd.AddCommand(podPsCmd)
 	podCmd.AddCommand(podStopCmd)
 	podCmd.AddCommand(podStartCmd)
@@ -457,7 +534,7 @@ func podInit() {
 	podDeleteCmd.Flags().BoolVar(&deleteVolumes, "with-volumes", true, "delete volumes of pod")
 	podCmd.AddCommand(podLogsCmd)
 	podLogsCmd.Flags().UintVar(&outputTail, "tail", 0, "Show only last N lines")
-	podLogsCmd.Flags().StringSliceVar(&outputFields, "fields", []string{"log", "info", "metric", "app"}, "Show defined elements")
+	podLogsCmd.Flags().StringSliceVar(&outputFields, "fields", []string{"log", "info", "metric", "netstat", "app"}, "Show defined elements")
 	podLogsCmd.Flags().StringVarP(&logFormatName, "format", "", "lines", "Format to print logs, supports: lines, json")
 	podModifyInit()
 }

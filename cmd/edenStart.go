@@ -3,8 +3,6 @@ package cmd
 import (
 	"fmt"
 	"github.com/lf-edge/eden/pkg/eden"
-	"github.com/lf-edge/eden/pkg/eve"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,11 +65,13 @@ var startCmd = &cobra.Command{
 			qemuAccel = viper.GetBool("eve.accel")
 			qemuSMBIOSSerial = viper.GetString("eve.serial")
 			qemuConfigFile = utils.ResolveAbsPath(viper.GetString("eve.qemu-config"))
+			qemuMonitorPort = viper.GetInt("eve.qemu-monitor-port")
 			evePidFile = utils.ResolveAbsPath(viper.GetString("eve.pid"))
 			eveLogFile = utils.ResolveAbsPath(viper.GetString("eve.log"))
 			eveRemote = viper.GetBool("eve.remote")
 			hostFwd = viper.GetStringMapString("eve.hostfwd")
 			eveTelnetPort = viper.GetInt("eve.telnet-port")
+			apiV1 = viper.GetBool("adam.v1")
 		}
 		return nil
 	},
@@ -84,7 +84,7 @@ var startCmd = &cobra.Command{
 		if !adamRemoteRedis {
 			adamRemoteRedisURL = ""
 		}
-		if err := eden.StartAdam(adamPort, adamDist, adamForce, adamTag, adamRemoteRedisURL); err != nil {
+		if err := eden.StartAdam(adamPort, adamDist, adamForce, adamTag, adamRemoteRedisURL, apiV1); err != nil {
 			log.Errorf("cannot start adam: %s", err)
 		} else {
 			log.Infof("Adam is running and accesible on port %d", adamPort)
@@ -109,43 +109,20 @@ var startCmd = &cobra.Command{
 				log.Infof("EVE is starting in Parallels")
 			}
 		} else if devModel == defaults.DefaultVBoxModel {
-			if err := eden.StartEVEVBox(vmName, eveImageFile, cpus, mem, hostFwd, getUplinkPortIPMap()); err != nil {
+			if err := eden.StartEVEVBox(vmName, eveImageFile, cpus, mem, hostFwd); err != nil {
 				log.Errorf("cannot start eve: %s", err)
 			} else {
 				log.Infof("EVE is starting in Virtual Box")
 			}
 		} else {
-			if err := eden.StartEVEQemu(qemuARCH, qemuOS, eveImageFile, qemuSMBIOSSerial, eveTelnetPort, hostFwd, qemuAccel, qemuConfigFile, eveLogFile, evePidFile, false); err != nil {
+			if err := eden.StartEVEQemu(qemuARCH, qemuOS, eveImageFile, qemuSMBIOSSerial, eveTelnetPort, qemuMonitorPort,
+				hostFwd, qemuAccel, qemuConfigFile, eveLogFile, evePidFile, false); err != nil {
 				log.Errorf("cannot start eve: %s", err)
 			} else {
 				log.Infof("EVE is starting")
 			}
 		}
 	},
-}
-
-func getUplinkPortIPMap() map[string]net.IP {
-	ipMap := make(map[string]net.IP)
-	changer := &adamChanger{}
-	ctrl, dev, err := changer.getControllerAndDev()
-	if err != nil {
-		log.Debugf("getControllerAndDev: %s", err)
-		fmt.Printf("%s EVE status: undefined (no onboarded EVE)\n", statusWarn())
-	} else {
-		eveState := eve.Init(ctrl, dev)
-		if err = ctrl.InfoLastCallback(dev.GetID(), nil, eveState.InfoCallback()); err != nil {
-			log.Fatalf("Fail in get InfoLastCallback: %s", err)
-		}
-		if err = ctrl.MetricLastCallback(dev.GetID(), nil, eveState.MetricCallback()); err != nil {
-			log.Fatalf("Fail in get InfoLastCallback: %s", err)
-		}
-		if lastDInfo := eveState.InfoAndMetrics().GetDinfo(); lastDInfo != nil {
-			for _, nw := range lastDInfo.Network {
-				ipMap[nw.DevName] = net.ParseIP(nw.IPAddrs[0])
-			}
-		}
-	}
-	return ipMap
 }
 
 func startInit() {
@@ -178,6 +155,7 @@ func startInit() {
 	startCmd.Flags().BoolVarP(&qemuAccel, "eve-accel", "", true, "use acceleration")
 	startCmd.Flags().StringVarP(&qemuSMBIOSSerial, "eve-serial", "", defaults.DefaultEVESerial, "SMBIOS serial")
 	startCmd.Flags().StringVarP(&qemuConfigFile, "qemu-config", "", filepath.Join(currentPath, defaults.DefaultDist, defaults.DefaultQemuFileToSave), "config file to use")
+	startCmd.Flags().IntVarP(&qemuMonitorPort, "qemu-monitor-port", "", defaults.DefaultQemuMonitorPort, "Port for access to QEMU monitor")
 	startCmd.Flags().StringVarP(&evePidFile, "eve-pid", "", filepath.Join(currentPath, defaults.DefaultDist, "eve.pid"), "file for save EVE pid")
 	startCmd.Flags().StringVarP(&eveLogFile, "eve-log", "", filepath.Join(currentPath, defaults.DefaultDist, "eve.log"), "file for save EVE log")
 	startCmd.Flags().StringVarP(&eveImageFile, "image-file", "", "", "path to image drive, overrides default setting")

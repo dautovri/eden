@@ -27,8 +27,8 @@ var (
 	baseOSImageActivate bool
 	baseOSVDrive        bool
 	configItems         map[string]string
+	deviceItems         map[string]string
 	baseOSVersion       string
-	getFromFileName     bool
 	edenDist            string
 	fileWithConfig      string
 )
@@ -143,7 +143,7 @@ var edgeNodeEVEImageUpdate = &cobra.Command{
 		if len(qemuPorts) == 0 {
 			qemuPorts = nil
 		}
-		baseOSImageConfig := expectation.BaseOSImage(baseOSVDrive)
+		baseOSImageConfig := expectation.BaseOSImage(baseOSVersion, baseOSVDrive)
 		dev.SetBaseOSConfig(append(dev.GetBaseOSConfigs(), baseOSImageConfig.Uuidandversion.Uuid))
 		if err = changer.setControllerAndDev(ctrl, dev); err != nil {
 			log.Fatalf("setControllerAndDev: %s", err)
@@ -213,7 +213,7 @@ var edgeNodeEVEImageRemove = &cobra.Command{
 			log.Fatalf("getControllerAndDev error: %s", err)
 		}
 
-		if getFromFileName {
+		if baseOSVersion == "" {
 			correctionFileName := fmt.Sprintf("%s.ver", rootFsPath)
 			if rootFSFromCorrectionFile, err := ioutil.ReadFile(correctionFileName); err == nil {
 				baseOSVersion = string(rootFSFromCorrectionFile)
@@ -253,7 +253,7 @@ var edgeNodeEVEImageRemove = &cobra.Command{
 }
 
 var edgeNodeUpdate = &cobra.Command{
-	Use:   "update --config key=value",
+	Use:   "update --config key=value --device key=value",
 	Short: "update EVE config",
 	Long:  `Update EVE config.`,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
@@ -279,6 +279,11 @@ var edgeNodeUpdate = &cobra.Command{
 		}
 		for key, val := range configItems {
 			dev.SetConfigItem(key, val)
+		}
+		for key, val := range deviceItems {
+			if err := dev.SetDeviceItem(key, val); err != nil {
+				log.Fatalf("SetDeviceItem: %s", err)
+			}
 		}
 
 		if err = changer.setControllerAndDev(ctrl, dev); err != nil {
@@ -389,14 +394,17 @@ func controllerInit() {
 	edgeNodeSetConfig.Flags().StringVar(&fileWithConfig, "file", "", "set config from file")
 	pf := controllerCmd.PersistentFlags()
 	pf.StringVarP(&controllerMode, "mode", "m", "", "mode to use [file|proto|adam|zedcloud]://<URL> (default is adam)")
-	edgeNodeEVEImageUpdateFlags := edgeNodeEVEImageUpdate.Flags()
-	edgeNodeEVEImageUpdateFlags.StringVarP(&baseOSVersion, "os-version", "", "", "version of ROOTFS")
-	edgeNodeEVEImageUpdateFlags.StringVar(&registry, "registry", "remote", "Select registry to use for containers (remote/local)")
-	edgeNodeEVEImageUpdateFlags.BoolVarP(&getFromFileName, "from-filename", "", true, "get version from filename")
-	edgeNodeEVEImageUpdateFlags.BoolVarP(&baseOSImageActivate, "activate", "", true, "activate image")
-	edgeNodeEVEImageUpdateFlags.BoolVar(&baseOSVDrive, "drive", false, "provide drive to baseOS")
+	edgeNodeEVEImageUpdate.Flags().StringVarP(&baseOSVersion, "os-version", "", "", "version of ROOTFS")
+	edgeNodeEVEImageUpdate.Flags().StringVar(&registry, "registry", "remote", "Select registry to use for containers (remote/local)")
+	edgeNodeEVEImageUpdate.Flags().BoolVarP(&baseOSImageActivate, "activate", "", true, "activate image")
+	edgeNodeEVEImageUpdate.Flags().BoolVar(&baseOSVDrive, "drive", false, "provide drive to baseOS")
+	edgeNodeEVEImageRemove.Flags().StringVarP(&baseOSVersion, "os-version", "", "", "version of ROOTFS")
+	edgeNodeEVEImageRemove.Flags().StringVar(&registry, "registry", "remote", "Select registry to use for containers (remote/local)")
 	edgeNodeUpdateFlags := edgeNodeUpdate.Flags()
 	configUsage := `set of key=value items.
 Supported keys are defined in https://github.com/lf-edge/eve/blob/master/docs/CONFIG-PROPERTIES.md`
 	edgeNodeUpdateFlags.StringToStringVar(&configItems, "config", make(map[string]string), configUsage)
+	deviceUsage := `set of key=value items.
+Supported keys: global_profile,local_profile_server,profile_server_token`
+	edgeNodeUpdateFlags.StringToStringVar(&deviceItems, "device", make(map[string]string), deviceUsage)
 }

@@ -44,7 +44,11 @@ var (
 
 	eveConfigDir string
 
-	netboot bool
+	netboot   bool
+	installer bool
+
+	softserial    string
+	zedcontrolURL string
 )
 
 func generateScripts(in string, out string) {
@@ -160,7 +164,10 @@ var setupCmd = &cobra.Command{
 		if err != nil {
 			log.Fatalf("GetDevModelByName: %s", err)
 		}
-		if netboot {
+		if netboot && installer {
+			log.Fatal("Please use netboot or installer flag, not both")
+		}
+		if netboot || installer {
 			if devModel != defaults.DefaultGeneralModel {
 				log.Fatalf("Cannot use netboot for devmodel %s, please use general instead", devModel)
 			}
@@ -214,19 +221,36 @@ var setupCmd = &cobra.Command{
 				wifiPSK = strings.ToLower(hex.EncodeToString(pbkdf2.Key(pass, []byte(ssid), 4096, 32, sha1.New)))
 				fmt.Println()
 			}
-			if err := eden.GenerateEveCerts(certsDir, certsDomain, certsIP, certsEVEIP, certsUUID, devModel, ssid, wifiPSK); err != nil {
-				log.Errorf("cannot GenerateEveCerts: %s", err)
+			if zedcontrolURL == "" {
+				if err := eden.GenerateEveCerts(certsDir, certsDomain, certsIP, certsEVEIP, certsUUID, devModel, ssid, wifiPSK, apiV1); err != nil {
+					log.Errorf("cannot GenerateEveCerts: %s", err)
+				} else {
+					log.Info("GenerateEveCerts done")
+				}
 			} else {
-				log.Info("GenerateEveCerts done")
+				if err := eden.PutEveCerts(certsDir, devModel, ssid, wifiPSK); err != nil {
+					log.Errorf("cannot GenerateEveCerts: %s", err)
+				} else {
+					log.Info("GenerateEveCerts done")
+				}
 			}
 		} else {
 			log.Info("GenerateEveCerts done")
 			log.Infof("Certs already exists in certs dir: %s", certsDir)
 		}
-		if err := eden.GenerateEVEConfig(certsDir, certsDomain, certsEVEIP, adamPort, apiV1); err != nil {
-			log.Errorf("cannot GenerateEVEConfig: %s", err)
+
+		if zedcontrolURL == "" {
+			if err := eden.GenerateEVEConfig(certsDir, certsDomain, certsEVEIP, adamPort, apiV1, softserial); err != nil {
+				log.Errorf("cannot GenerateEVEConfig: %s", err)
+			} else {
+				log.Info("GenerateEVEConfig done")
+			}
 		} else {
-			log.Info("GenerateEVEConfig done")
+			if err := eden.GenerateEVEConfig(certsDir, zedcontrolURL, "", 0, false, softserial); err != nil {
+				log.Errorf("cannot GenerateEVEConfig: %s", err)
+			} else {
+				log.Info("GenerateEVEConfig done")
+			}
 		}
 		if _, err := os.Lstat(configDir); !os.IsNotExist(err) {
 			//put files from config folder to generated directory
@@ -349,6 +373,11 @@ var setupCmd = &cobra.Command{
 					re := regexp.MustCompile("# set url .*")
 					ipxeFileReplaced := re.ReplaceAll(ipxeFileBytes,
 						[]byte(fmt.Sprintf("set url http://%s:%d/%s/", eServerIP, eserverPort, "eserver")))
+					if softserial != "" {
+						ipxeFileReplaced = []byte(strings.ReplaceAll(string(ipxeFileReplaced),
+							"eve_soft_serial=${mac:hexhyp}",
+							fmt.Sprintf("eve_soft_serial=%s", softserial)))
+					}
 					_ = os.MkdirAll(filepath.Join(filepath.Dir(eveImageFile), "tftp"), 0777)
 					ipxeConfigFile := filepath.Join(filepath.Dir(eveImageFile), "tftp", "ipxe.efi.cfg")
 					_ = ioutil.WriteFile(ipxeConfigFile, ipxeFileReplaced, 0777)
@@ -359,6 +388,18 @@ var setupCmd = &cobra.Command{
 					log.Infof("Please use %s to boot your EVE via ipxe", ipxeConfigFile)
 					log.Infof("ipxe.efi.cfg uploaded to eserver (http://%s:%s/eserver/ipxe.efi.cfg). Use it to boot your EVE via network", eServerIP, eServerPort)
 					log.Infof("EVE already exists: %s", filepath.Dir(eveImageFile))
+				}
+			} else if installer {
+				if _, err := os.Lstat(eveImageFile); os.IsNotExist(err) {
+					if err := utils.DownloadEveInstaller(eveDesc, eveImageFile); err != nil {
+						log.Errorf("cannot download EVE: %s", err)
+					} else {
+						log.Infof("download EVE done: %s", imageTag)
+						log.Infof(model.DiskReadyMessage(), eveImageFile)
+					}
+				} else {
+					log.Infof("download EVE done: %s", imageTag)
+					log.Infof("EVE already exists: %s", eveImageFile)
 				}
 			} else {
 				if _, err := os.Lstat(eveImageFile); os.IsNotExist(err) {
@@ -390,10 +431,17 @@ var setupCmd = &cobra.Command{
 					generateScripts(shPath+"activate.csh.tmpl",
 						cfgDir+"activate.csh")
 					fmt.Println("To activate EDEN settings run:")
-					fmt.Println("* for BASH -- `source ~/.eden/activate.sh`")
+					fmt.Println("* for BASH/ZSH -- `source ~/.eden/activate.sh`")
 					fmt.Println("* for TCSH -- `source ~/.eden/activate.csh`")
 					fmt.Println("To deactivate them -- eden_deactivate")
 				}
+			}
+			if zedcontrolURL != "" {
+				log.Printf("Please use %s as Onboarding Key", defaults.OnboardUUID)
+				if softserial != "" {
+					log.Printf("use %s as Serial Number", softserial)
+				}
+				log.Printf("To onboard EVE onto %s", zedcontrolURL)
 			}
 		}
 	},
@@ -441,4 +489,7 @@ func setupInit() {
 	setupCmd.Flags().StringVar(&eveConfigDir, "eve-config-dir", filepath.Join(currentPath, "eve-config-dir"), "directory with files to put into EVE`s conf directory during setup")
 
 	setupCmd.Flags().BoolVar(&netboot, "netboot", false, "Setup for use with network boot")
+	setupCmd.Flags().BoolVar(&installer, "installer", false, "Setup for create installer")
+	setupCmd.Flags().StringVar(&softserial, "soft-serial", "", "Use provided serial instead of hardware one, please use chars and numbers here")
+	setupCmd.Flags().StringVar(&zedcontrolURL, "zedcontrol", "", "Use provided zedcontrol domain instead of adam (as example: zedcloud.alpha.zededa.net)")
 }

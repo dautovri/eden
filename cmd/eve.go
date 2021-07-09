@@ -2,17 +2,20 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/lf-edge/eden/pkg/expect"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
-
-	"github.com/lf-edge/eden/pkg/eden"
+	"text/tabwriter"
 
 	"github.com/lf-edge/eden/pkg/controller/einfo"
 	"github.com/lf-edge/eden/pkg/defaults"
 	"github.com/lf-edge/eden/pkg/device"
+	"github.com/lf-edge/eden/pkg/eden"
+	"github.com/lf-edge/eden/pkg/eve"
 	"github.com/lf-edge/eden/pkg/utils"
 	"github.com/lf-edge/eve/api/go/info"
 	log "github.com/sirupsen/logrus"
@@ -27,12 +30,14 @@ var (
 	qemuSMBIOSSerial  string
 	qemuConfigFile    string
 	qemuForeground    bool
+	qemuMonitorPort   int
 	eveSSHKey         string
 	eveHost           string
 	eveSSHPort        int
 	eveTelnetPort     int
 	eveRemoteAddr     string
 	eveConfigFromFile bool
+	eveInterfaceName  string
 )
 
 var eveCmd = &cobra.Command{
@@ -56,6 +61,7 @@ var startEveCmd = &cobra.Command{
 			qemuAccel = viper.GetBool("eve.accel")
 			qemuSMBIOSSerial = viper.GetString("eve.serial")
 			qemuConfigFile = utils.ResolveAbsPath(viper.GetString("eve.qemu-config"))
+			qemuMonitorPort = viper.GetInt("eve.qemu-monitor-port")
 			eveImageFile = utils.ResolveAbsPath(viper.GetString("eve.image-file"))
 			evePidFile = utils.ResolveAbsPath(viper.GetString("eve.pid"))
 			eveLogFile = utils.ResolveAbsPath(viper.GetString("eve.log"))
@@ -71,7 +77,7 @@ var startEveCmd = &cobra.Command{
 		}
 
 		if devModel == defaults.DefaultVBoxModel {
-			if err := eden.StartEVEVBox(vmName, eveImageFile, cpus, mem, hostFwd, getUplinkPortIPMap()); err != nil {
+			if err := eden.StartEVEVBox(vmName, eveImageFile, cpus, mem, hostFwd); err != nil {
 				log.Errorf("cannot start eve: %s", err)
 			} else {
 				log.Infof("EVE is starting in Virtual Box")
@@ -83,7 +89,8 @@ var startEveCmd = &cobra.Command{
 				log.Infof("EVE is starting in Parallels")
 			}
 		} else {
-			if err := eden.StartEVEQemu(qemuARCH, qemuOS, eveImageFile, qemuSMBIOSSerial, eveTelnetPort, hostFwd, qemuAccel, qemuConfigFile, eveLogFile, evePidFile, false); err != nil {
+			if err := eden.StartEVEQemu(qemuARCH, qemuOS, eveImageFile, qemuSMBIOSSerial, eveTelnetPort, qemuMonitorPort,
+				hostFwd, qemuAccel, qemuConfigFile, eveLogFile, evePidFile, false); err != nil {
 				log.Errorf("cannot start eve: %s", err)
 			} else {
 				log.Infof("EVE is starting")
@@ -217,8 +224,34 @@ var statusEveCmd = &cobra.Command{
 }
 
 func getEVEIP() string {
-	if !eveRemote && runtime.GOOS == "darwin" {
-		return "127.0.0.1"
+	if runtime.GOOS == "darwin" {
+		if !eveRemote {
+			return "127.0.0.1"
+		}
+		changer := &adamChanger{}
+		ctrl, dev, err := changer.getControllerAndDev()
+		if err != nil {
+			log.Errorf("getControllerAndDev: %s", err)
+			return ""
+		}
+		eveState := eve.Init(ctrl, dev)
+		if err = ctrl.InfoLastCallback(dev.GetID(), nil, eveState.InfoCallback()); err != nil {
+			log.Errorf("Fail in get InfoLastCallback: %s", err)
+		}
+		if err = ctrl.MetricLastCallback(dev.GetID(), nil, eveState.MetricCallback()); err != nil {
+			log.Errorf("Fail in get InfoLastCallback: %s", err)
+		}
+		if lastDInfo := eveState.InfoAndMetrics().GetDinfo(); lastDInfo != nil {
+			var ips []string
+			for _, nw := range lastDInfo.Network {
+				ips = append(ips, nw.IPAddrs...)
+			}
+			if len(ips) == 0 {
+				return ""
+			}
+			return ips[0]
+		}
+		return ""
 	}
 	if ip, err := eveLastRequests(); err == nil && ip != "" {
 		return ip
@@ -394,6 +427,8 @@ var resetEveCmd = &cobra.Command{
 		dev.SetSerial(vars.EveSerial)
 		dev.SetOnboardKey(vars.EveCert)
 		dev.SetDevModel(vars.DevModel)
+		dev.SetGlobalProfile("")
+		dev.SetLocalProfileServer("")
 		err = ctrl.OnBoardDev(dev)
 		if err != nil {
 			log.Fatal(err)
@@ -444,6 +479,140 @@ var epochEveCmd = &cobra.Command{
 	},
 }
 
+var linkEveCmd = &cobra.Command{
+	Use:   "link up|down|status",
+	Short: "manage EVE interface link state",
+	Long:  `Manage EVE interface link state. Supported for QEMU and VirtualBox.`,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		assignCobraToViper(cmd)
+		viperLoaded, err := utils.LoadConfigFile(configFile)
+		if err != nil {
+			return fmt.Errorf("error reading config: %s", err.Error())
+		}
+		if viperLoaded {
+			eveRemote = viper.GetBool("eve.remote")
+			qemuMonitorPort = viper.GetInt("eve.qemu-monitor-port")
+			devModel = viper.GetString("eve.devmodel")
+		}
+		return nil
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		var err error
+		if eveRemote {
+			log.Fatal("Cannot change interface link of a remote EVE")
+		}
+		command := "status"
+		if len(args) > 0 {
+			command = args[0]
+		}
+		if command == "up" || command == "down" {
+			bringUp := command == "up"
+			switch devModel {
+			case defaults.DefaultVBoxModel:
+				err = eden.SetLinkStateVbox(vmName, eveInterfaceName, bringUp)
+			case defaults.DefaultQemuModel:
+				err = eden.SetLinkStateQemu(qemuMonitorPort, eveInterfaceName, bringUp)
+			default:
+				log.Fatalf("Link operations are not supported for devmodel '%s'", devModel)
+			}
+			if err != nil {
+				log.Fatal(err)
+			}
+			// continue to print the new link state of every interface after the update
+			log.Info("Link state of EVE interfaces after update:")
+			eveInterfaceName = ""
+		}
+
+		var linkStates []eden.LinkState
+		switch devModel {
+		case defaults.DefaultVBoxModel:
+			linkStates, err = eden.GetLinkStateVbox(vmName, eveInterfaceName)
+		case defaults.DefaultQemuModel:
+			linkStates, err = eden.GetLinkStateQemu(qemuMonitorPort, eveInterfaceName)
+		default:
+			log.Fatalf("Link operations are not supported for devmodel '%s'", devModel)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// print table with link states into stdout
+		w := new(tabwriter.Writer)
+		w.Init(os.Stdout, 0, 8, 1, '\t', 0)
+		if _, err = fmt.Fprintln(w, "INTERFACE\tLINK"); err != nil {
+			log.Fatal(err)
+		}
+		sort.SliceStable(linkStates, func(i, j int) bool {
+			return linkStates[i].InterfaceName < linkStates[j].InterfaceName
+		})
+		for _, linkState := range linkStates {
+			state := "UP"
+			if !linkState.IsUP {
+				state = "DOWN"
+			}
+			if _, err := fmt.Fprintln(w, linkState.InterfaceName+"\t"+state); err != nil {
+				log.Fatal(err)
+			}
+		}
+		if err = w.Flush(); err != nil {
+			log.Fatal(err)
+		}
+	},
+}
+
+var updateEveCmd = &cobra.Command{
+	Use:   "update <image file or url (oci:// or file:// or http(s)://)>",
+	Short: "Update EVE image.",
+	Long:  `Update EVE image.`,
+	Args:  cobra.ExactArgs(1),
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		assignCobraToViper(cmd)
+		if baseOSVersionFlag := cmd.Flags().Lookup("os-version"); baseOSVersionFlag != nil {
+			if err := viper.BindPFlag("eve.base-tag", baseOSVersionFlag); err != nil {
+				log.Fatal(err)
+			}
+		}
+		viperLoaded, err := utils.LoadConfigFile(configFile)
+		if err != nil {
+			return fmt.Errorf("error reading configFile: %s", err.Error())
+		}
+		if viperLoaded {
+			eserverPort = viper.GetInt("eden.eserver.port")
+			edenDist = viper.GetString("eden.dist")
+		}
+		return nil
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		var opts []expect.ExpectationOption
+		baseOSImage := args[0]
+		changer, err := changerByControllerMode(controllerMode)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ctrl, dev, err := changer.getControllerAndDev()
+		if err != nil {
+			log.Fatalf("getControllerAndDev error: %s", err)
+		}
+		registryToUse := registry
+		switch registry {
+		case "local":
+			registryToUse = fmt.Sprintf("%s:%d", viper.GetString("registry.ip"), viper.GetInt("registry.port"))
+		case "remote":
+			registryToUse = ""
+		}
+		opts = append(opts, expect.WithRegistry(registryToUse))
+		expectation := expect.AppExpectationFromURL(ctrl, dev, baseOSImage, "", opts...)
+		if len(qemuPorts) == 0 {
+			qemuPorts = nil
+		}
+		baseOSImageConfig := expectation.BaseOSImage(baseOSVersion, baseOSVDrive)
+		dev.SetBaseOSConfig(append(dev.GetBaseOSConfigs(), baseOSImageConfig.Uuidandversion.Uuid))
+		if err = changer.setControllerAndDev(ctrl, dev); err != nil {
+			log.Fatalf("setControllerAndDev: %s", err)
+		}
+	},
+}
+
 func eveInit() {
 	eveCmd.AddCommand(startEveCmd)
 	eveCmd.AddCommand(stopEveCmd)
@@ -455,6 +624,8 @@ func eveInit() {
 	eveCmd.AddCommand(resetEveCmd)
 	eveCmd.AddCommand(versionEveCmd)
 	eveCmd.AddCommand(epochEveCmd)
+	eveCmd.AddCommand(linkEveCmd)
+	eveCmd.AddCommand(updateEveCmd)
 	currentPath, err := os.Getwd()
 	if err != nil {
 		log.Fatal(err)
@@ -468,6 +639,7 @@ func eveInit() {
 	startEveCmd.Flags().StringVarP(&evePidFile, "eve-pid", "", filepath.Join(currentPath, defaults.DefaultDist, "eve.pid"), "file for save EVE pid")
 	startEveCmd.Flags().StringVarP(&eveLogFile, "eve-log", "", filepath.Join(currentPath, defaults.DefaultDist, "eve.log"), "file for save EVE log")
 	startEveCmd.Flags().BoolVarP(&qemuForeground, "foreground", "", false, "run in foreground")
+	startEveCmd.Flags().IntVarP(&qemuMonitorPort, "qemu-monitor-port", "", defaults.DefaultQemuMonitorPort, "Port for access to QEMU monitor")
 	startEveCmd.Flags().IntVarP(&eveTelnetPort, "eve-telnet-port", "", defaults.DefaultTelnetPort, "Port for telnet access")
 	startEveCmd.Flags().StringVarP(&vmName, "vmname", "", defaults.DefaultVBoxVMName, "vbox vmname required to create vm")
 	startEveCmd.Flags().IntVarP(&cpus, "cpus", "", defaults.DefaultCpus, "vbox cpus")
@@ -482,4 +654,8 @@ func eveInit() {
 	consoleEveCmd.Flags().StringVarP(&eveHost, "eve-host", "", defaults.DefaultEVEHost, "IP of eve")
 	consoleEveCmd.Flags().IntVarP(&eveTelnetPort, "eve-telnet-port", "", defaults.DefaultTelnetPort, "Port for telnet access")
 	epochEveCmd.Flags().BoolVar(&eveConfigFromFile, "use-config-file", false, "Load config of EVE from file")
+	linkEveCmd.Flags().IntVarP(&qemuMonitorPort, "qemu-monitor-port", "", defaults.DefaultQemuMonitorPort, "Port for access to QEMU monitor")
+	linkEveCmd.Flags().StringVarP(&vmName, "vmname", "", defaults.DefaultVBoxVMName, "name of the EVE VBox VM")
+	linkEveCmd.Flags().StringVarP(&eveInterfaceName, "interface-name", "i", "", "EVE interface to get/change the link state of")
+	updateEveCmd.Flags()
 }

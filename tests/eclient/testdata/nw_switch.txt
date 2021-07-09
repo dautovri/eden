@@ -15,7 +15,7 @@ exec chmod 600 {{EdenConfig "eden.tests"}}/eclient/image/cert/id_rsa
 
 message 'Resetting of EVE'
 eden eve reset
-exec sleep 20
+exec sleep 30
 
 message 'Creating networks'
 #exec sleep 5
@@ -50,7 +50,7 @@ stdout '100% packet loss'
 
 message 'Switching to 2st network'
 eden pod modify pong --networks n2
-test eden.app.test -test.v -timewait 20m RUNNING pong
+test eden.app.test -test.v -timewait 15m RUNNING pong
 eden pod ps
 cp stdout pod_ps
 exec bash pong_ip.sh
@@ -65,7 +65,7 @@ stdout '0% packet loss'
 
 message 'Switching back to 1st network'
 eden pod modify pong --networks n1
-test eden.app.test -test.v -timewait 20m RUNNING pong
+test eden.app.test -test.v -timewait 15m RUNNING pong
 eden pod ps
 cp stdout pod_ps
 exec bash pong_ip.sh

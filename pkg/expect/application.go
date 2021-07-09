@@ -2,8 +2,10 @@ package expect
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/lf-edge/eden/pkg/defaults"
+	"github.com/lf-edge/eden/pkg/utils"
 	"github.com/lf-edge/eve/api/go/config"
 	"github.com/lf-edge/eve/api/go/evecommon"
 	uuid "github.com/satori/go.uuid"
@@ -37,7 +39,7 @@ func (exp *AppExpectation) createAppInstanceConfig(img *config.Image, netInstanc
 	}
 	var bundle *appBundle
 	switch exp.appType {
-	case dockerApp:
+	case dockerApp, directoryApp:
 		bundle = exp.createAppInstanceConfigDocker(img, id)
 	case httpApp, httpsApp, fileApp:
 		bundle = exp.createAppInstanceConfigVM(img, id)
@@ -45,20 +47,62 @@ func (exp *AppExpectation) createAppInstanceConfig(img *config.Image, netInstanc
 		return nil, fmt.Errorf("not supported appType")
 	}
 	for _, d := range exp.disks {
-		tempExp := AppExpectationFromURL(exp.ctrl, exp.device, d, "")
-		tempExp.imageFormat = string(exp.volumesType)
+		mountPoint := ""
+		proccessedLink := d
+		splitLink := strings.Split(d, ",")
+		if len(splitLink) > 1 {
+			for _, el := range splitLink {
+				splitArgs := strings.SplitN(el, "=", 2)
+				if len(splitArgs) < 2 {
+					log.Fatalf("cannot parse volume (must have src and dst): %s", el)
+				}
+				switch splitArgs[0] {
+				case "source", "src":
+					proccessedLink = splitArgs[1]
+				case "destination", "dst", "target":
+					mountPoint = splitArgs[1]
+				}
+			}
+			log.Printf("will use volume [%s] at mount point [%s]", proccessedLink, mountPoint)
+			//remove existing elements with the same mount point to overwrite
+			utils.DelEleInSliceByFunction(&bundle.appInstanceConfig.VolumeRefList, func(i interface{}) bool {
+				if i.(*config.VolumeRef).MountDir == mountPoint {
+					utils.DelEleInSliceByFunction(&bundle.volumes, func(v interface{}) bool {
+						return v.(*config.Volume).Uuid == i.(*config.VolumeRef).Uuid
+					})
+					return true
+				}
+				return false
+			})
+		}
+		tempExp := AppExpectationFromURL(exp.ctrl, exp.device, proccessedLink, "")
+		if tempExp.appType != dockerApp {
+			//we should not overwrite type for docker
+			tempExp.imageFormat = string(exp.volumesType)
+		}
 		image := tempExp.Image()
 		if image != nil {
 			drive := &config.Drive{
 				Image:        image,
-				Maxsizebytes: defaults.DefaultVolumeSize,
+				Maxsizebytes: exp.volumeSize,
 			}
 			ind := len(bundle.volumes)
-			contentTree := exp.imageToContentTree(image, fmt.Sprintf("%s-%d", exp.appName, ind))
-			bundle.contentTrees = append(bundle.contentTrees, contentTree)
-			volume := exp.driveToVolume(drive, ind+1, contentTree)
+			toAppend := true
+			var contentTree *config.ContentTree
+			for _, ct := range bundle.contentTrees {
+				if ct.URL == image.Name && ct.Sha256 == image.Sha256 {
+					//skip append of existent ContentTree
+					toAppend = false
+					contentTree = ct
+				}
+			}
+			if toAppend {
+				contentTree = exp.imageToContentTree(image, fmt.Sprintf("%s-%d", exp.appName, ind))
+				bundle.contentTrees = append(bundle.contentTrees, contentTree)
+			}
+			volume := exp.driveToVolume(drive, ind, contentTree)
 			bundle.volumes = append(bundle.volumes, volume)
-			bundle.appInstanceConfig.VolumeRefList = append(bundle.appInstanceConfig.VolumeRefList, &config.VolumeRef{Uuid: volume.Uuid})
+			bundle.appInstanceConfig.VolumeRefList = append(bundle.appInstanceConfig.VolumeRefList, &config.VolumeRef{Uuid: volume.Uuid, MountDir: mountPoint})
 		}
 	}
 	if exp.virtualizationMode == config.VmMode_PV {
@@ -67,11 +111,18 @@ func (exp *AppExpectation) createAppInstanceConfig(img *config.Image, netInstanc
 	}
 	bundle.appInstanceConfig.Interfaces = []*config.NetworkAdapter{}
 
-	for k, ni := range netInstances {
+	//keep order of exp.netInstances
+	for _, k := range exp.netInstances {
+		ni, ok := netInstances[k]
+		if !ok {
+			log.Fatalf("broken network instance pointer: %v", k)
+		}
 		bundle.appInstanceConfig.Interfaces = append(bundle.appInstanceConfig.Interfaces, &config.NetworkAdapter{
-			Name:      "default",
-			NetworkId: ni.Uuidandversion.Uuid,
-			Acls:      exp.getAcls(k),
+			Name:         "default",
+			NetworkId:    ni.Uuidandversion.Uuid,
+			Acls:         exp.getAcls(k),
+			MacAddress:   k.mac,
+			AccessVlanId: exp.getAccessVID(k),
 		})
 	}
 	if exp.vncDisplay != 0 {
@@ -81,12 +132,17 @@ func (exp *AppExpectation) createAppInstanceConfig(img *config.Image, netInstanc
 	}
 	var adapters []*config.Adapter
 	for _, adapterName := range exp.appAdapters {
+		adapterType := evecommon.PhyIoType_PhyIoUSB
+		if strings.HasPrefix(adapterName, "eth") {
+			adapterType = evecommon.PhyIoType_PhyIoNetEth
+		}
 		adapters = append(adapters, &config.Adapter{
-			Type: evecommon.PhyIoType_PhyIoUSB,
+			Type: adapterType,
 			Name: adapterName,
 		})
 	}
 	bundle.appInstanceConfig.Adapters = adapters
+	bundle.appInstanceConfig.ProfileList = exp.profiles
 	return bundle, nil
 }
 

@@ -11,10 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lf-edge/adam/pkg/server"
-	"github.com/lf-edge/adam/pkg/x509"
 	"github.com/lf-edge/eden/pkg/controller/cachers"
 	"github.com/lf-edge/eden/pkg/controller/eapps"
+	"github.com/lf-edge/eden/pkg/controller/eflowlog"
 	"github.com/lf-edge/eden/pkg/controller/einfo"
 	"github.com/lf-edge/eden/pkg/controller/elog"
 	"github.com/lf-edge/eden/pkg/controller/emetric"
@@ -78,6 +77,7 @@ func (adam *Ctx) getLoader() (loader loaders.Loader) {
 				StreamLogs:    adam.getLogsRedisStream,
 				StreamInfo:    adam.getInfoRedisStream,
 				StreamMetrics: adam.getMetricsRedisStream,
+				StreamFlowLog: adam.getFlowLogRedisStream,
 				StreamRequest: adam.getRequestRedisStream,
 				StreamApps:    adam.getAppsLogsRedisStream,
 			}
@@ -161,7 +161,7 @@ func (adam *Ctx) Register(device *device.Ctx) error {
 		return err
 	}
 
-	objToSend := server.OnboardCert{
+	objToSend := types.OnboardCert{
 		Cert:   b,
 		Serial: device.GetSerial(),
 	}
@@ -189,6 +189,11 @@ func (adam *Ctx) ConfigSet(devUUID uuid.UUID, devConfig []byte) (err error) {
 //ConfigGet get config for devID
 func (adam *Ctx) ConfigGet(devUUID uuid.UUID) (out string, err error) {
 	return adam.getObj(path.Join("/admin/device", devUUID.String(), "config"))
+}
+
+//CertsGet get attest certs for devID
+func (adam *Ctx) CertsGet(devUUID uuid.UUID) (out string, err error) {
+	return adam.getObj(path.Join("/admin/device", devUUID.String(), "certs"))
 }
 
 //RequestLastCallback check request by pattern from existence files with callback
@@ -221,6 +226,18 @@ func (adam *Ctx) LogLastCallback(devUUID uuid.UUID, q map[string]string, handler
 	var loader = adam.getLoader()
 	loader.SetUUID(devUUID)
 	return elog.LogLast(loader, q, handler)
+}
+
+//FlowLogChecker check FlowLogs by pattern from existence files with FlowLogLast and use FlowLogWatchWithTimeout with timeout for observe new files
+func (adam *Ctx) FlowLogChecker(devUUID uuid.UUID, q map[string]string, handler eflowlog.HandlerFunc, mode eflowlog.FlowLogCheckerMode, timeout time.Duration) (err error) {
+	return eflowlog.FlowLogChecker(adam.getLoader(), devUUID, q, handler, mode, timeout)
+}
+
+//FlowLogLastCallback check FlowLogs by pattern from existence files with callback
+func (adam *Ctx) FlowLogLastCallback(devUUID uuid.UUID, q map[string]string, handler eflowlog.HandlerFunc) (err error) {
+	var loader = adam.getLoader()
+	loader.SetUUID(devUUID)
+	return eflowlog.FlowLogLast(loader, q, handler)
 }
 
 //InfoChecker checks the information in the regular expression pattern 'query' and processes the info.ZInfoMsg found by the function 'handler' from existing files (mode=einfo.InfoExist), new files (mode=einfo.InfoNew) or any of them (mode=einfo.InfoAny) with timeout.
@@ -259,7 +276,7 @@ func (adam *Ctx) DeviceRemove(devUUID uuid.UUID) (err error) {
 
 //DeviceGetOnboard get device onboardUUID for devUUID
 func (adam *Ctx) DeviceGetOnboard(devUUID uuid.UUID) (onboardUUID uuid.UUID, err error) {
-	var devCert server.DeviceCert
+	var devCert types.DeviceCert
 	devInfo, err := adam.getObj(path.Join("/admin/device", devUUID.String()))
 	if err != nil {
 		return uuid.Nil, err
@@ -267,7 +284,7 @@ func (adam *Ctx) DeviceGetOnboard(devUUID uuid.UUID) (onboardUUID uuid.UUID, err
 	if err = json.Unmarshal([]byte(devInfo), &devCert); err != nil {
 		return uuid.Nil, err
 	}
-	cert, err := x509.ParseCert(devCert.Onboard)
+	cert, err := utils.ParseFirstCertFromBlock(devCert.Onboard)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -285,7 +302,7 @@ func (adam *Ctx) DeviceGetByOnboard(eveCert string) (devUUID uuid.UUID, err erro
 		log.Printf("error reading cert file %s: %v", eveCert, err)
 		return uuid.Nil, err
 	}
-	cert, err := x509.ParseCert(b)
+	cert, err := utils.ParseFirstCertFromBlock(b)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -319,12 +336,12 @@ func (adam *Ctx) DeviceGetByOnboardUUID(onboardUUID string) (devUUID uuid.UUID, 
 }
 
 //GetDeviceCert gets deviceCert contains certificates and serial
-func (adam *Ctx) GetDeviceCert(device *device.Ctx) (deviceCert *server.DeviceCert, err error) {
+func (adam *Ctx) GetDeviceCert(device *device.Ctx) (deviceCert *types.DeviceCert, err error) {
 	devInfo, err := adam.getObj(path.Join("/admin/device", device.GetID().String()))
 	if err != nil {
 		return nil, err
 	}
-	var devCert server.DeviceCert
+	var devCert types.DeviceCert
 	if err = json.Unmarshal([]byte(devInfo), &devCert); err != nil {
 		return nil, err
 	}
@@ -332,7 +349,7 @@ func (adam *Ctx) GetDeviceCert(device *device.Ctx) (deviceCert *server.DeviceCer
 }
 
 //UploadDeviceCert upload deviceCert into Adam
-func (adam *Ctx) UploadDeviceCert(deviceCert server.DeviceCert) error {
+func (adam *Ctx) UploadDeviceCert(deviceCert types.DeviceCert) error {
 	body, err := json.Marshal(deviceCert)
 	if err != nil {
 		return err

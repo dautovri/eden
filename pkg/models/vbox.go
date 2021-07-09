@@ -67,6 +67,7 @@ func (ctx *DevModelVBox) PhysicalIOs() []*config.PhysicalIO {
 //SetPhysicalIOs sets physicalIOs of devModel
 func (ctx *DevModelVBox) SetPhysicalIOs(physicalIOs []*config.PhysicalIO){
 	ctx.physicalIOs = physicalIOs
+	ctx.adapters = filterSystemAdapters(ctx.adapters, ctx.physicalIOs)
 }
 
 //AdapterForSwitches returns adapterForSwitches of DevModelVBox
@@ -77,14 +78,6 @@ func (ctx *DevModelVBox) AdapterForSwitches() []string {
 //DevModelType returns devModelType of DevModelVBox
 func (ctx *DevModelVBox) DevModelType() string {
 	return string(devModelTypeVBox)
-}
-
-//GetFirstAdapterForSwitches return first adapter available for switch networkInstance
-func (ctx *DevModelVBox) GetFirstAdapterForSwitches() string {
-	if len(ctx.adapterForSwitches) > 0 {
-		return ctx.adapterForSwitches[0]
-	}
-	return "uplink"
 }
 
 func createVBox() (DevModel, error) {

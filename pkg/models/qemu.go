@@ -64,6 +64,7 @@ func (ctx *DevModelQemu) PhysicalIOs() []*config.PhysicalIO {
 //SetPhysicalIOs sets physicalIOs of devModel
 func (ctx *DevModelQemu) SetPhysicalIOs(physicalIOs []*config.PhysicalIO){
 	ctx.physicalIOs = physicalIOs
+	ctx.adapters = filterSystemAdapters(ctx.adapters, ctx.physicalIOs)
 }
 
 //AdapterForSwitches returns adapterForSwitches of devModel
@@ -74,14 +75,6 @@ func (ctx *DevModelQemu) AdapterForSwitches() []string {
 //DevModelType returns devModelType of devModel
 func (ctx *DevModelQemu) DevModelType() string {
 	return string(devModelTypeQemu)
-}
-
-//GetFirstAdapterForSwitches return first adapter available for switch networkInstance
-func (ctx *DevModelQemu) GetFirstAdapterForSwitches() string {
-	if len(ctx.adapterForSwitches) > 0 {
-		return ctx.adapterForSwitches[0]
-	}
-	return "uplink"
 }
 
 func createQemu() (DevModel, error) {

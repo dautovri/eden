@@ -35,24 +35,25 @@ const (
 
 //domains, ips, ports
 const (
-	DefaultDomain       = "mydomain.adam"
-	DefaultIP           = "192.168.0.1"
-	DefaultEVEIP        = "192.168.1.2"
-	DefaultEserverPort  = 8888
-	DefaultTelnetPort   = 7777
-	DefaultSSHPort      = 2222
-	DefaultEVEHost      = "127.0.0.1"
-	DefaultRedisHost    = "localhost"
-	DefaultRedisPort    = 6379
-	DefaultAdamPort     = 3333
-	DefaultRegistryPort = 5000
+	DefaultDomain          = "mydomain.adam"
+	DefaultIP              = "192.168.0.1"
+	DefaultEVEIP           = "192.168.1.2"
+	DefaultEserverPort     = 8888
+	DefaultTelnetPort      = 7777
+	DefaultQemuMonitorPort = 7788
+	DefaultSSHPort         = 2222
+	DefaultEVEHost         = "127.0.0.1"
+	DefaultRedisHost       = "localhost"
+	DefaultRedisPort       = 6379
+	DefaultAdamPort        = 3333
+	DefaultRegistryPort    = 5000
 
 	//tags, versions, repos
-	DefaultEVETag               = "6.3.0" //DefaultEVETag tag for EVE image
-	DefaultAdamTag              = "0.0.12"
+	DefaultEVETag               = "6.8.0" //DefaultEVETag tag for EVE image
+	DefaultAdamTag              = "0.0.27"
 	DefaultRedisTag             = "6"
 	DefaultRegistryTag          = "2.7"
-	DefaultProcTag              = "1.2"
+	DefaultProcTag              = "1.3"
 	DefaultImage                = "library/alpine"
 	DefaultAdamContainerRef     = "lfedge/adam"
 	DefaultRedisContainerRef    = "redis"
@@ -68,7 +69,7 @@ const (
 
 	DefaultRedisPasswordFile = "redis.pass"
 
-	DefaultEServerTag          = "1.4"
+	DefaultEServerTag          = "1.5"
 	DefaultEServerContainerRef = "lfedge/eden-http-server"
 
 	//DefaultRepeatCount is repeat count for requests
@@ -89,7 +90,7 @@ const (
 	DefaultTestScenario          = ""
 	DefaultRootFSVersionPattern  = `^.*-(xen|kvm|acrn|rpi|rpi-xen|rpi-kvm)-(amd64|arm64)$`
 	DefaultControllerModePattern = `^(?P<Type>(file|proto|adam|zedcloud)):\/\/(?P<URL>.*)$`
-	DefaultPodLinkPattern        = `^(?P<TYPE>(oci|docker|http[s]{0,1}|file)):\/\/(?P<TAG>[^:]+):*(?P<VERSION>.*)$`
+	DefaultPodLinkPattern        = `^(?P<TYPE>(oci|docker|http[s]{0,1}|file|directory)):\/\/(?P<TAG>[^:]+):*(?P<VERSION>.*)$`
 	DefaultRedisContainerName    = "eden_redis"
 	DefaultAdamContainerName     = "eden_adam"
 	DefaultRegistryContainerName = "eden_registry"
@@ -103,15 +104,20 @@ const (
 	DefaultInfoRedisPrefix       = "INFO_EVE_"
 	DefaultMetricsRedisPrefix    = "METRICS_EVE_"
 	DefaultRequestsRedisPrefix   = "REQUESTS_EVE_"
+	DefaultFlowLogRedisPrefix    = "FLOW_MESSAGE_EVE_"
 
 	DefaultEveLogLevel  = "info"    //min level of logs saved in files on EVE device
 	DefaultAdamLogLevel = "warning" //min level of logs sent from EVE to Adam
 
 	DefaultQemuAccelDarwin     = "-machine q35,accel=hvf -cpu kvm64,kvmclock=off "
 	DefaultQemuAccelLinuxAmd64 = "-machine q35,accel=kvm,dump-guest-core=off,kernel-irqchip=split -cpu host,invtsc=on,kvmclock=off -device intel-iommu,intremap=on,caching-mode=on,aw-bits=48 "
-	DefaultQemuAccelLinuxArm64 = "-machine virt,accel=kvm -cpu=host "
+	DefaultQemulAmd64          = "-machine q35 --cpu SandyBridge "
 
-	DefaultAppSubnet = "10.11.12.0/24"
+	DefaultQemuAccelArm64 = "-machine virt,accel=kvm,usb=off,dump-guest-core=off -cpu host "
+	DefaultQemulArm64     = "-machine virt,virtualization=true -cpu cortex-a57 "
+
+	DefaultAppSubnet        = "10.11.12.0/24"
+	DefaultHostOnlyNotation = "host-only-acl"
 
 	DefaultQemuModel = "ZedVirtual-4G"
 
@@ -138,7 +144,7 @@ const (
 
 	DefaultDummyExpect = "docker://image"
 
-	DefaultVolumeSize = 2 * 1024 * 1024 * 1024
+	DefaultVolumeSize = 200 * 1024 * 1024
 
 	DefaultEmptyVolumeLinkDocker = "docker://hello-world"
 	DefaultEmptyVolumeLinkQcow2  = "empty.qcow2"
@@ -192,30 +198,31 @@ var (
 		"registry.port": "registry-port",
 		"registry.dist": "registry-dist",
 
-		"eve.arch":         "eve-arch",
-		"eve.os":           "eve-os",
-		"eve.accel":        "eve-accel",
-		"eve.hv":           "eve-hv",
-		"eve.serial":       "eve-serial",
-		"eve.pid":          "eve-pid",
-		"eve.log":          "eve-log",
-		"eve.firmware":     "eve-firmware",
-		"eve.repo":         "eve-repo",
-		"eve.registry":     "eve-registry",
-		"eve.tag":          "eve-tag",
-		"eve.uefi-tag":     "eve-uefi-tag",
-		"eve.hostfwd":      "eve-hostfwd",
-		"eve.dist":         "eve-dist",
-		"eve.base-dist":    "eve-base-dist",
-		"eve.qemu-config":  "qemu-config",
-		"eve.uuid":         "uuid",
-		"eve.image-file":   "image-file",
-		"eve.dtb-part":     "dtb-part",
-		"eve.config-part":  "config-part",
-		"eve.base-version": "os-version",
-		"eve.devmodel":     "devmodel",
-		"eve.devmodelfile": "devmodel-file",
-		"eve.telnet-port":  "eve-telnet-port",
+		"eve.arch":              "eve-arch",
+		"eve.os":                "eve-os",
+		"eve.accel":             "eve-accel",
+		"eve.hv":                "eve-hv",
+		"eve.serial":            "eve-serial",
+		"eve.pid":               "eve-pid",
+		"eve.log":               "eve-log",
+		"eve.firmware":          "eve-firmware",
+		"eve.repo":              "eve-repo",
+		"eve.registry":          "eve-registry",
+		"eve.tag":               "eve-tag",
+		"eve.uefi-tag":          "eve-uefi-tag",
+		"eve.hostfwd":           "eve-hostfwd",
+		"eve.dist":              "eve-dist",
+		"eve.base-dist":         "eve-base-dist",
+		"eve.qemu-config":       "qemu-config",
+		"eve.uuid":              "uuid",
+		"eve.image-file":        "image-file",
+		"eve.dtb-part":          "dtb-part",
+		"eve.config-part":       "config-part",
+		"eve.base-version":      "os-version",
+		"eve.devmodel":          "devmodel",
+		"eve.devmodelfile":      "devmodel-file",
+		"eve.telnet-port":       "eve-telnet-port",
+		"eve.qemu-monitor-port": "qemu-monitor-port",
 
 		"eden.images.dist":   "image-dist",
 		"eden.images.docker": "docker-yml",

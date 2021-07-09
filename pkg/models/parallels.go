@@ -66,6 +66,7 @@ func (ctx *DevModelParallels) PhysicalIOs() []*config.PhysicalIO {
 //SetPhysicalIOs sets physicalIOs of devModel
 func (ctx *DevModelParallels) SetPhysicalIOs(physicalIOs []*config.PhysicalIO){
 	ctx.physicalIOs = physicalIOs
+	ctx.adapters = filterSystemAdapters(ctx.adapters, ctx.physicalIOs)
 }
 
 //AdapterForSwitches returns adapterForSwitches of devModel
@@ -76,11 +77,6 @@ func (ctx *DevModelParallels) AdapterForSwitches() []string {
 //DevModelType returns devModelType of devModel
 func (ctx *DevModelParallels) DevModelType() string {
 	return string(devModelTypeParallels)
-}
-
-//GetFirstAdapterForSwitches return first adapter available for switch networkInstance
-func (ctx *DevModelParallels) GetFirstAdapterForSwitches() string {
-	return "uplink"
 }
 
 func createParallels() (DevModel, error) {

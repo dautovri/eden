@@ -1,8 +1,11 @@
 package device
 
 import (
-	"github.com/satori/go.uuid"
+	"fmt"
 	"log"
+
+	"github.com/lf-edge/eve/api/go/config"
+	"github.com/satori/go.uuid"
 )
 
 //EdgeNodeState determinate state of EdgeNode
@@ -40,6 +43,10 @@ type Ctx struct {
 	remote                     bool
 	remoteAddr                 string
 	epoch                      int64
+	cipherContexts             []*config.CipherContext
+	globalProfile              string
+	localProfileServer         string
+	profileServerToken         string
 }
 
 //CreateEdgeNode generates EdgeNode
@@ -247,4 +254,60 @@ func (cfg *Ctx) CheckHash(newHash [32]byte) bool {
 		return true
 	}
 	return false
+}
+
+//SetCipherContexts set CipherContexts for device
+func (cfg *Ctx) SetCipherContexts(contexts []*config.CipherContext) *Ctx {
+	cfg.cipherContexts = contexts
+	return cfg
+}
+
+//GetCipherContexts get CipherContexts of device
+func (cfg *Ctx) GetCipherContexts() []*config.CipherContext {
+	return cfg.cipherContexts
+}
+
+//SetDeviceItem for setting devConfig fields
+func (cfg *Ctx) SetDeviceItem(key string, val string) error {
+	switch key {
+	case "global_profile":
+		cfg.globalProfile = val
+	case "local_profile_server":
+		cfg.localProfileServer = val
+	case "profile_server_token":
+		cfg.profileServerToken = val
+	default:
+		return fmt.Errorf("unsopported key: %s", key)
+	}
+	return nil
+}
+
+//GetGlobalProfile get globalProfile
+func (cfg *Ctx) GetGlobalProfile() string {
+	return cfg.globalProfile
+}
+
+//SetGlobalProfile set globalProfile
+func (cfg *Ctx) SetGlobalProfile(globalProfile string) {
+	cfg.globalProfile = globalProfile
+}
+
+//GetLocalProfileServer get localProfileServer
+func (cfg *Ctx) GetLocalProfileServer() string {
+	return cfg.localProfileServer
+}
+
+//SetLocalProfileServer set localProfileServer
+func (cfg *Ctx) SetLocalProfileServer(localProfileServer string) {
+	cfg.localProfileServer = localProfileServer
+}
+
+//GetProfileServerToken get profileServerToken
+func (cfg *Ctx) GetProfileServerToken() string {
+	return cfg.profileServerToken
+}
+
+//SetProfileServerToken set profileServerToken
+func (cfg *Ctx) SetProfileServerToken(profileServerToken string) {
+	cfg.profileServerToken = profileServerToken
 }

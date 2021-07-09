@@ -1,7 +1,9 @@
 package expect
 
 import (
+	"fmt"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -20,10 +22,11 @@ import (
 type appType int
 
 var (
-	dockerApp appType = 1 //for docker application
-	httpApp   appType = 2 //for application with image from http link
-	httpsApp  appType = 3 //for application with image from https link
-	fileApp   appType = 4 //for application with image from file path
+	dockerApp    appType = 1 //for docker application
+	httpApp      appType = 2 //for application with image from http link
+	httpsApp     appType = 3 //for application with image from https link
+	fileApp      appType = 4 //for application with image from file path
+	directoryApp appType = 5 //for application with files from directory
 )
 
 //AppExpectation is description of app, expected to run on EVE
@@ -40,6 +43,8 @@ type AppExpectation struct {
 	mem         uint32
 	metadata    string
 
+	baseOSVersion string
+
 	vncDisplay  uint32
 	vncPassword string
 
@@ -54,6 +59,7 @@ type AppExpectation struct {
 	device *device.Ctx
 
 	volumesType VolumeType
+	volumeSize  int64
 
 	registry string
 
@@ -63,7 +69,31 @@ type AppExpectation struct {
 	sftpLoad       bool
 
 	disks []string
-	acl   []string
+	acl   map[string][]string // networkInstanceName -> acls
+	vlans map[string]int // networkInstanceName -> VID
+
+	openStackMetadata bool
+	profiles          []string
+}
+
+//use provided appLink to try predict format of volume
+func tryPredictAppType(appLink string) string {
+	if len(strings.Split(appLink, "://")) < 2 {
+		fi, err := os.Stat(appLink)
+		if err != nil {
+			log.Warnf("tryPredictAppType: %v", err)
+		} else {
+			switch mode := fi.Mode(); {
+			case mode.IsDir():
+				//appLink is directory
+				return fmt.Sprintf("directory://%s", appLink)
+			case mode.IsRegular():
+				//appLink is file
+				return fmt.Sprintf("file://%s", appLink)
+			}
+		}
+	}
+	return appLink
 }
 
 //AppExpectationFromURL init AppExpectation with defined:
@@ -137,7 +167,7 @@ func AppExpectationFromURL(ctrl controller.Cloud, device *device.Ctx, appLink st
 					if err != nil {
 						log.Fatalf("Port map port %s could not be converted to Integer", qv)
 					}
-					if portNum == extPort || (portNum + defaults.DefaultPortMapOffset) == extPort {
+					if portNum == extPort || (portNum+defaults.DefaultPortMapOffset) == extPort {
 						ni.ports[extPort] = intPort
 						continue exit
 					}
@@ -179,10 +209,11 @@ func AppExpectationFromURL(ctrl controller.Cloud, device *device.Ctx, appLink st
 		//set defined name if provided
 		expectation.appName = podName
 	}
+	appLink = tryPredictAppType(appLink)
 	//parse provided appLink to obtain params
 	params := utils.GetParams(appLink, defaults.DefaultPodLinkPattern)
 	if len(params) == 0 {
-		log.Fatalf("fail to parse (oci|docker|http(s)|file)://(<TAG>[:<VERSION>] | <URL> | <PATH>) from argument (%s)", appLink)
+		log.Fatalf("fail to parse (oci|docker|http(s)|file|directory)://(<TAG>[:<VERSION>] | <URL> | <PATH>) from argument (%s)", appLink)
 	}
 	expectation.appType = 0
 	expectation.appURL = ""
@@ -201,6 +232,8 @@ func AppExpectationFromURL(ctrl controller.Cloud, device *device.Ctx, appLink st
 		expectation.appType = httpsApp
 	case "file":
 		expectation.appType = fileApp
+	case "directory":
+		expectation.appType = directoryApp
 	case "":
 		expectation.appType = dockerApp
 	default:
